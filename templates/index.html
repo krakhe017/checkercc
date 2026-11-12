@@ -13,6 +13,21 @@
   </header>
 
   <main>
+    <!-- Panel de Proxies -->
+    <section class="panel">
+      <h2>🔧 Configuración de Proxies</h2>
+      <p class="sub">Los proxies gratuitos tienen baja tasa de éxito. Si todas las tarjetas declinan, necesitas proxies residenciales.</p>
+      
+      <textarea id="proxies" placeholder="http://1.2.3.4:8080&#10;socks5://5.6.7.8:1080&#10;9.10.11.12:3128"></textarea>
+      
+      <div class="row">
+        <button id="btn-proxies-manual" class="primary">📥 Cargar proxies manualmente</button>
+        <button id="btn-proxies-auto">🤖 Obtener proxies gratuitos automáticamente</button>
+        <span id="proxy-status" style="color:#8b949e;font-size:13px;">No cargado</span>
+      </div>
+    </section>
+
+    <!-- Panel de Tarjetas -->
     <section class="panel">
       <textarea id="cards" placeholder="4111111111111111|12|2026|123&#10;5555555555554444|08|2027|456&#10;..."></textarea>
       <div class="row">
@@ -29,6 +44,7 @@
       <div class="progress"><div id="bar" class="bar"></div></div>
     </section>
 
+    <!-- Panel de Resultados -->
     <section class="panel">
       <div class="row space">
         <h2>Resultados</h2>
@@ -64,6 +80,30 @@
 
     const $ = (id) => document.getElementById(id);
 
+    // --- Lógica de Proxies ---
+    $("btn-proxies-manual").addEventListener("click", async () => {
+      const raw = $("proxies").value;
+      const res = await fetch("/api/proxies", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({proxies: raw})
+      });
+      const data = await res.json();
+      $("proxy-status").textContent = `✅ ${data.count} proxies cargados`;
+    });
+
+    $("btn-proxies-auto").addEventListener("click", async () => {
+      $("proxy-status").textContent = "⏳ Descargando...";
+      const res = await fetch("/api/proxies/auto", {method: "POST"});
+      const data = await res.json();
+      if (data.error) {
+        $("proxy-status").textContent = `❌ ${data.error}`;
+      } else {
+        $("proxy-status").textContent = `✅ ${data.count} proxies gratuitos cargados (${data.source})`;
+      }
+    });
+
+    // --- Lógica de Checker ---
     async function start() {
       const cards = $("cards").value;
       if (!cards.trim()) { alert("Pega al menos una tarjeta."); return; }
