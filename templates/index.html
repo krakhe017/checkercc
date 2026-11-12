@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Card Checker — Stripe</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>💳 Card Checker <span class="badge">Stripe</span></h1>
+    <p class="sub">Pega tarjetas ilimitadas en formato <code>cc|mm|yyyy|cvv</code> — una por línea.</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <textarea id="cards" placeholder="4111111111111111|12|2026|123&#10;5555555555554444|08|2027|456&#10;..."></textarea>
+      <div class="row">
+        <button id="btn-start" class="primary">🚀 Iniciar verificación</button>
+        <button id="btn-cancel" class="danger" disabled>⛔ Cancelar</button>
+        <button id="btn-export" disabled>⬇️ Exportar CSV</button>
+      </div>
+      <div id="stats" class="stats">
+        <div class="stat"><span id="s-total">0</span><small>Total</small></div>
+        <div class="stat ok"><span id="s-approved">0</span><small>Approved</small></div>
+        <div class="stat no"><span id="s-declined">0</span><small>Declined</small></div>
+        <div class="stat"><span id="s-done">0</span><small>Procesadas</small></div>
+      </div>
+      <div class="progress"><div id="bar" class="bar"></div></div>
+    </section>
+
+    <section class="panel">
+      <div class="row space">
+        <h2>Resultados</h2>
+        <input id="filter" placeholder="🔍 Filtrar..." />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Tarjeta</th>
+              <th>Status</th>
+              <th>Mensaje</th>
+              <th>Tiempo</th>
+            </tr>
+          </thead>
+          <tbody id="rows">
+            <tr><td colspan="5" class="empty">Aún no hay resultados. Pega tarjetas y presiona Iniciar.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <a href="/api/lives" target="_blank">Ver Lives.txt</a>
+  </footer>
+
+  <script>
+    let jobId = null;
+    let pollTimer = null;
+    let allResults = [];
+
+    const $ = (id) => document.getElementById(id);
+
+    async function start() {
+      const cards = $("cards").value;
+      if (!cards.trim()) { alert("Pega al menos una tarjeta."); return; }
+
+      $("btn-start").disabled = true;
+      const res = await fetch("/api/start", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({cards})
+      });
+      const data = await res.json();
+      if (data.error) {
+        alert(data.error);
+        $("btn-start").disabled = false;
+        return;
+      }
+
+      jobId = data.job_id;
+      allResults = [];
+      $("rows").innerHTML = "";
+      $("s-total").textContent = data.total;
+      $("s-approved").textContent = 0;
+      $("s-declined").textContent = 0;
+      $("s-done").textContent = 0;
+      $("bar").style.width = "0%";
+      $("btn-cancel").disabled = false;
+      $("btn-export").disabled = true;
+
+      if (data.invalid && data.invalid.length) {
+        alert(`${data.invalid.length} línea(s) inválidas fueron ignoradas.`);
+      }
+
+      pollTimer = setInterval(poll, 1200);
+    }
+
+    async function poll() {
+      if (!jobId) return;
+      const res = await fetch(`/api/status/${jobId}`);
+      const data = await res.json();
+      if (data.error) return;
+
+      render(data.results);
+      const approved = data.results.filter(r => r.status === "Approved").length;
+      const declined = data.results.filter(r => r.status === "Declined").length;
+
+      $("s-approved").textContent = approved;
+      $("s-declined").textContent = declined;
+      $("s-done").textContent = data.done;
+      $("bar").style.width = `${(data.done / data.total) * 100}%`;
+
+      if (data.status === "finished" || data.status === "cancelled") {
+        clearInterval(pollTimer);
+        $("btn-start").disabled = false;
+        $("btn-cancel").disabled = true;
+        $("btn-export").disabled = false;
+      }
+    }
+
+    function render(results) {
+      allResults = results;
+      const filter = $("filter").value.toLowerCase();
+      const filtered = results.filter(r =>
+        !filter || r.card.toLowerCase().includes(filter) || r.status.toLowerCase().includes(filter)
+      );
+      if (!filtered.length) {
+        $("rows").innerHTML = `<tr><td colspan="5" class="empty">Sin resultados.</td></tr>`;
+        return;
+      }
+      $("rows").innerHTML = filtered.map(r => `
+        <tr>
+          <td>${r.id}</td>
+          <td class="mono">${r.card}</td>
+          <td><span class="pill ${r.status === 'Approved' ? 'ok' : 'no'}">${r.status}</span></td>
+          <td class="msg">${escapeHtml(r.message)}</td>
+          <td>${r.time}s</td>
+        </tr>`).join("");
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      }[c]));
+    }
+
+    async function cancel() {
+      if (!jobId) return;
+      await fetch(`/api/cancel/${jobId}`, {method: "POST"});
+    }
+
+    $("btn-start").addEventListener("click", start);
+    $("btn-cancel").addEventListener("click", cancel);
+    $("btn-export").addEventListener("click", () => { if (jobId) window.location = `/api/export/${jobId}.csv`; });
+    $("filter").addEventListener("input", () => render(allResults));
+  </script>
+</body>
+</html>
