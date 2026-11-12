@@ -6,14 +6,14 @@ import uuid
 import threading
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, Response, send_file
-from checker import parse_card, run_check
+from checker import parse_card, run_check_with_proxy, set_proxies
 
 app = Flask(__name__)
 
-# Almacén en memoria de trabajos
 JOBS = {}
 LIVES_FILE = "Lives.txt"
 LOCK = threading.Lock()
+USER_PROXIES = []
 
 
 def _append_live(cc_display, msg):
@@ -32,7 +32,7 @@ def _worker(job_id, cards):
             return
         started = time.time()
         try:
-            status, msg = run_check(cc)
+            status, msg = run_check_with_proxy(cc)
         except Exception as e:
             status, msg = "Declined", f"error: {e}"
         elapsed = round(time.time() - started, 1)
@@ -143,6 +143,52 @@ def api_lives():
     if not os.path.isfile(LIVES_FILE):
         return Response("", mimetype="text/plain")
     return send_file(LIVES_FILE, mimetype="text/plain")
+
+
+# --- Lógica de Proxies ---
+
+@app.route("/api/proxies", methods=["POST"])
+def api_set_proxies():
+    global USER_PROXIES
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("proxies", "")
+
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    valid = []
+    for ln in lines:
+        if not ln.startswith(("http://", "https://", "socks4://", "socks5://")):
+            ln = "http://" + ln
+        valid.append(ln)
+
+    USER_PROXIES = valid
+    set_proxies(valid)
+    return jsonify({"ok": True, "count": len(valid)})
+
+
+@app.route("/api/proxies/auto", methods=["POST"])
+def api_auto_proxies():
+    import requests as req
+    global USER_PROXIES
+    try:
+        # Fuente de proxies gratuitos (ProxyScrape)
+        r = req.get(
+            "https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/protocols/http/data.txt",
+            timeout=15
+        )
+        if r.status_code == 200:
+            lines = [ln.strip() for ln in r.text.splitlines() if ln.strip() and not ln.startswith("#")]
+            proxies = []
+            for ln in lines:
+                if not ln.startswith("http"):
+                    ln = "http://" + ln
+                proxies.append(ln)
+            
+            USER_PROXIES = proxies
+            set_proxies(proxies)
+            return jsonify({"ok": True, "count": len(proxies), "source": "proxyscrape/http"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "No se pudo obtener la lista de proxies"}), 500
 
 
 if __name__ == "__main__":
