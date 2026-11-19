@@ -2,7 +2,6 @@ from flask import Flask, render_template, request, jsonify
 import requests
 import os
 import base64
-import json
 import stripe
 import smtplib
 import time
@@ -12,10 +11,10 @@ from email.mime.text import MIMEText
 
 app = Flask(__name__)
 
-# --- CONFIGURACIÓN DE STRIPE ---
+# --- CONFIGURACIÓN DE STRIPE (MANTENIDA) ---
 stripe.api_key = "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"
 
-# --- CONFIGURACIÓN DE PAYPAL ---
+# --- CONFIGURACIÓN DE PAYPAL (NUEVA) ---
 PAYPAL_CLIENT_ID = "TU_CLIENT_ID_DE_PAYPAL"
 PAYPAL_CLIENT_SECRET = "TU_CLIENT_SECRET_DE_PAYPAL"
 PAYPAL_API_BASE = "https://api-m.paypal.com" # Producción
@@ -41,7 +40,6 @@ def index():
 def process_stripe_payment():
     data = request.json
     try:
-        # Lógica original de creación de payment method
         pm = stripe.PaymentMethod.create(
             type="card",
             card={
