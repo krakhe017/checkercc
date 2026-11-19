@@ -1,202 +1,141 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Card Checker — Stripe</title>
-  <link rel="stylesheet" href="/static/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Card Checker - Stripe & PayPal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://www.paypal.com/sdk/js?client-id={{ PAYPAL_CLIENT_ID }}&currency=USD"></script>
 </head>
 <body>
-  <header>
-    <h1>💳 Card Checker <span class="badge">Stripe</span></h1>
-    <p class="sub">Pega tarjetas ilimitadas en formato <code>cc|mm|yyyy|cvv</code> — una por línea.</p>
-  </header>
+    <div class="container">
+        <header>
+            <h1>💳 Card Checker Pro</h1>
+            <p class="subtitle">Selecciona el método de pago</p>
+        </header>
 
-  <main>
-    <!-- Panel de Proxies -->
-    <section class="panel">
-      <h2>🔧 Configuración de Proxies</h2>
-      <p class="sub">Los proxies gratuitos tienen baja tasa de éxito. Si todas las tarjetas declinan, necesitas proxies residenciales.</p>
-      
-      <textarea id="proxies" placeholder="http://1.2.3.4:8080&#10;socks5://5.6.7.8:1080&#10;9.10.11.12:3128"></textarea>
-      
-      <div class="row">
-        <button id="btn-proxies-manual" class="primary">📥 Cargar proxies manualmente</button>
-        <button id="btn-proxies-auto">🤖 Obtener proxies gratuitos automáticamente</button>
-        <span id="proxy-status" style="color:#8b949e;font-size:13px;">No cargado</span>
-      </div>
-    </section>
+        <!-- Selector de Pasarela -->
+        <div class="gateway-selector">
+            <button class="gateway-btn active" onclick="switchGateway('stripe', this)">Stripe</button>
+            <button class="gateway-btn" onclick="switchGateway('paypal', this)">PayPal</button>
+        </div>
 
-    <!-- Panel de Tarjetas -->
-    <section class="panel">
-      <textarea id="cards" placeholder="4111111111111111|12|2026|123&#10;5555555555554444|08|2027|456&#10;..."></textarea>
-      <div class="row">
-        <button id="btn-start" class="primary">🚀 Iniciar verificación</button>
-        <button id="btn-cancel" class="danger" disabled>⛔ Cancelar</button>
-        <button id="btn-export" disabled>⬇️ Exportar CSV</button>
-      </div>
-      <div id="stats" class="stats">
-        <div class="stat"><span id="s-total">0</span><small>Total</small></div>
-        <div class="stat ok"><span id="s-approved">0</span><small>Approved</small></div>
-        <div class="stat no"><span id="s-declined">0</span><small>Declined</small></div>
-        <div class="stat"><span id="s-done">0</span><small>Procesadas</small></div>
-      </div>
-      <div class="progress"><div id="bar" class="bar"></div></div>
-    </section>
+        <!-- Formulario de Tarjeta (Común para ambos) -->
+        <div class="card-form">
+            <div class="input-group">
+                <label>Número de Tarjeta</label>
+                <input type="text" id="card-number" placeholder="4111 1111 1111 1111">
+            </div>
+            <div class="row">
+                <div class="input-group">
+                    <label>Mes (MM)</label>
+                    <input type="text" id="card-mm" placeholder="12" maxlength="2">
+                </div>
+                <div class="input-group">
+                    <label>Año (YYYY)</label>
+                    <input type="text" id="card-yyyy" placeholder="2026" maxlength="4">
+                </div>
+                <div class="input-group">
+                    <label>CVV</label>
+                    <input type="text" id="card-cvv" placeholder="123" maxlength="4">
+                </div>
+            </div>
+            <button id="start-btn" class="btn-primary" onclick="startCheck()">Iniciar Verificación</button>
+        </div>
 
-    <!-- Panel de Resultados -->
-    <section class="panel">
-      <div class="row space">
-        <h2>Resultados</h2>
-        <input id="filter" placeholder="🔍 Filtrar..." />
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Tarjeta</th>
-              <th>Status</th>
-              <th>Mensaje</th>
-              <th>Tiempo</th>
-            </tr>
-          </thead>
-          <tbody id="rows">
-            <tr><td colspan="5" class="empty">Aún no hay resultados. Pega tarjetas y presiona Iniciar.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </main>
+        <!-- Contenedor de Resultados -->
+        <div id="result-container" class="result hidden">
+            <h3>Resultado:</h3>
+            <p id="result-message"></p>
+        </div>
 
-  <footer>
-    <a href="/api/lives" target="_blank">Ver Lives.txt</a>
-  </footer>
+        <!-- Contenedor de PayPal (Oculto por defecto) -->
+        <div id="paypal-container" class="hidden">
+            <div id="paypal-button-container"></div>
+        </div>
+    </div>
 
-  <script>
-    let jobId = null;
-    let pollTimer = null;
-    let allResults = [];
+    <script>
+        let currentGateway = 'stripe';
+        const PAYPAL_CLIENT_ID = "{{ PAYPAL_CLIENT_ID }}";
 
-    const $ = (id) => document.getElementById(id);
+        function switchGateway(gateway, element) {
+            currentGateway = gateway;
+            document.querySelectorAll('.gateway-btn').forEach(btn => btn.classList.remove('active'));
+            element.classList.add('active');
 
-    // --- Lógica de Proxies ---
-    $("btn-proxies-manual").addEventListener("click", async () => {
-      const raw = $("proxies").value;
-      const res = await fetch("/api/proxies", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({proxies: raw})
-      });
-      const data = await res.json();
-      $("proxy-status").textContent = `✅ ${data.count} proxies cargados`;
-    });
+            if (gateway === 'paypal') {
+                document.getElementById('paypal-container').classList.remove('hidden');
+                document.querySelector('.card-form').classList.add('hidden');
+                renderPayPalButtons();
+            } else {
+                document.getElementById('paypal-container').classList.add('hidden');
+                document.querySelector('.card-form').classList.remove('hidden');
+            }
+        }
 
-    $("btn-proxies-auto").addEventListener("click", async () => {
-      $("proxy-status").textContent = "⏳ Descargando...";
-      const res = await fetch("/api/proxies/auto", {method: "POST"});
-      const data = await res.json();
-      if (data.error) {
-        $("proxy-status").textContent = `❌ ${data.error}`;
-      } else {
-        $("proxy-status").textContent = `✅ ${data.count} proxies gratuitos cargados (${data.source})`;
-      }
-    });
+        // --- LÓGICA STRIPE ---
+        async function startCheck() {
+            if (currentGateway !== 'stripe') return;
 
-    // --- Lógica de Checker ---
-    async function start() {
-      const cards = $("cards").value;
-      if (!cards.trim()) { alert("Pega al menos una tarjeta."); return; }
+            const card = document.getElementById('card-number').value.replace(/\s/g, '');
+            const mm = document.getElementById('card-mm').value;
+            const yyyy = document.getElementById('card-yyyy').value;
+            const cvv = document.getElementById('card-cvv').value;
 
-      $("btn-start").disabled = true;
-      const res = await fetch("/api/start", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({cards})
-      });
-      const data = await res.json();
-      if (data.error) {
-        alert(data.error);
-        $("btn-start").disabled = false;
-        return;
-      }
+            if (!card || !mm || !yyyy || !cvv) return alert('Llena todos los campos');
 
-      jobId = data.job_id;
-      allResults = [];
-      $("rows").innerHTML = "";
-      $("s-total").textContent = data.total;
-      $("s-approved").textContent = 0;
-      $("s-declined").textContent = 0;
-      $("s-done").textContent = 0;
-      $("bar").style.width = "0%";
-      $("btn-cancel").disabled = false;
-      $("btn-export").disabled = true;
+            const btn = document.getElementById('start-btn');
+            btn.disabled = true;
+            btn.textContent = 'Procesando...';
 
-      if (data.invalid && data.invalid.length) {
-        alert(`${data.invalid.length} línea(s) inválidas fueron ignoradas.`);
-      }
+            try {
+                const res = await fetch('/process_stripe_payment', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ card, mm, yyyy, cvv })
+                });
+                const data = await res.json();
+                showResult(data.status === 'success' ? 'Aprobada' : 'Rechazada', data.message);
+            } catch (e) {
+                showResult('Error', 'Error de conexión');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Iniciar Verificación';
+            }
+        }
 
-      pollTimer = setInterval(poll, 1200);
-    }
+        // --- LÓGICA PAYPAL ---
+        function renderPayPalButtons() {
+            document.getElementById('paypal-button-container').innerHTML = '';
+            paypal.Buttons({
+                createOrder: function(data, actions) {
+                    return fetch('/api/paypal/create-order', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ amount: '2.50' })
+                    }).then(res => res.json()).then(data => data.id);
+                },
+                onApprove: function(data, actions) {
+                    return fetch('/api/paypal/capture-order', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ orderID: data.orderID })
+                    }).then(res => res.json()).then(details => {
+                        showResult('Aprobada', `Pago completado por ${details.payer.name.given_name}`);
+                    });
+                },
+                onError: function(err) {
+                    showResult('Error', 'Error en PayPal');
+                }
+            }).render('#paypal-button-container');
+        }
 
-    async function poll() {
-      if (!jobId) return;
-      const res = await fetch(`/api/status/${jobId}`);
-      const data = await res.json();
-      if (data.error) return;
-
-      render(data.results);
-      const approved = data.results.filter(r => r.status === "Approved").length;
-      const declined = data.results.filter(r => r.status === "Declined").length;
-
-      $("s-approved").textContent = approved;
-      $("s-declined").textContent = declined;
-      $("s-done").textContent = data.done;
-      $("bar").style.width = `${(data.done / data.total) * 100}%`;
-
-      if (data.status === "finished" || data.status === "cancelled") {
-        clearInterval(pollTimer);
-        $("btn-start").disabled = false;
-        $("btn-cancel").disabled = true;
-        $("btn-export").disabled = false;
-      }
-    }
-
-    function render(results) {
-      allResults = results;
-      const filter = $("filter").value.toLowerCase();
-      const filtered = results.filter(r =>
-        !filter || r.card.toLowerCase().includes(filter) || r.status.toLowerCase().includes(filter)
-      );
-      if (!filtered.length) {
-        $("rows").innerHTML = `<tr><td colspan="5" class="empty">Sin resultados.</td></tr>`;
-        return;
-      }
-      $("rows").innerHTML = filtered.map(r => `
-        <tr>
-          <td>${r.id}</td>
-          <td class="mono">${r.card}</td>
-          <td><span class="pill ${r.status === 'Approved' ? 'ok' : 'no'}">${r.status}</span></td>
-          <td class="msg">${escapeHtml(r.message)}</td>
-          <td>${r.time}s</td>
-        </tr>`).join("");
-    }
-
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, c => ({
-        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-      }[c]));
-    }
-
-    async function cancel() {
-      if (!jobId) return;
-      await fetch(`/api/cancel/${jobId}`, {method: "POST"});
-    }
-
-    $("btn-start").addEventListener("click", start);
-    $("btn-cancel").addEventListener("click", cancel);
-    $("btn-export").addEventListener("click", () => { if (jobId) window.location = `/api/export/${jobId}.csv`; });
-    $("filter").addEventListener("input", () => render(allResults));
-  </script>
+        function showResult(status, message) {
+            const container = document.getElementById('result-container');
+            container.classList.remove('hidden');
+            document.getElementById('result-message').textContent = `${status}: ${message}`;
+        }
+    </script>
 </body>
 </html>
