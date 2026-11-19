@@ -1,196 +1,94 @@
+from flask import Flask, render_template, request, jsonify
+import requests
 import os
-import csv
-import io
+import base64
+import json
+import stripe
+import smtplib
 import time
-import uuid
-import threading
-from datetime import datetime
-from flask import Flask, render_template, request, jsonify, Response, send_file
-from checker import parse_card, run_check_with_proxy, set_proxies
+import random
+import re
+from email.mime.text import MIMEText
 
 app = Flask(__name__)
 
-JOBS = {}
-LIVES_FILE = "Lives.txt"
-LOCK = threading.Lock()
-USER_PROXIES = []
+# --- CONFIGURACIÓN DE STRIPE ---
+stripe.api_key = "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"
 
+# --- CONFIGURACIÓN DE PAYPAL ---
+PAYPAL_CLIENT_ID = "TU_CLIENT_ID_DE_PAYPAL"
+PAYPAL_CLIENT_SECRET = "TU_CLIENT_SECRET_DE_PAYPAL"
+PAYPAL_API_BASE = "https://api-m.paypal.com" # Producción
 
-def _append_live(cc_display, msg):
-    try:
-        with LOCK, open(LIVES_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{cc_display} » {msg} » {datetime.utcnow().isoformat()}Z\n")
-    except Exception:
-        pass
+def get_paypal_access_token():
+    auth = base64.b64encode(f"{PAYPAL_CLIENT_ID}:{PAYPAL_CLIENT_SECRET}".encode()).decode()
+    headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"}
+    data = "grant_type=client_credentials"
+    response = requests.post(f"{PAYPAL_API_BASE}/v1/oauth2/token", headers=headers, data=data)
+    return response.json().get("access_token") if response.status_code == 200 else None
 
+@app.after_request
+def add_header(response):
+    response.headers['X-Frame-Options'] = 'ALLOWALL'
+    return response
 
-def _worker(job_id, cards):
-    job = JOBS[job_id]
-    for idx, cc in enumerate(cards):
-        if job["cancelled"]:
-            job["status"] = "cancelled"
-            return
-        started = time.time()
-        try:
-            status, msg = run_check_with_proxy(cc)
-        except Exception as e:
-            status, msg = "Declined", f"error: {e}"
-        elapsed = round(time.time() - started, 1)
-
-        with LOCK:
-            job["results"].append({
-                "id": idx + 1,
-                "card": cc["display"],
-                "status": status,
-                "message": msg,
-                "time": elapsed,
-            })
-            job["done"] += 1
-
-        if status == "Approved":
-            _append_live(cc["display"], msg)
-
-    job["status"] = "finished"
-
-
-@app.route("/")
+@app.route('/')
 def index():
-    return render_template("index.html")
+    return render_template('index.html')
 
-
-@app.route("/api/start", methods=["POST"])
-def api_start():
-    payload = request.get_json(silent=True) or {}
-    raw_text = payload.get("cards", "")
-
-    lines = [ln.strip() for ln in raw_text.replace(",", "\n").splitlines() if ln.strip()]
-    cards = []
-    invalid = []
-    for ln in lines:
-        cc = parse_card(ln)
-        if cc:
-            cards.append(cc)
-        else:
-            invalid.append(ln)
-
-    if not cards:
-        return jsonify({"error": "No se encontraron tarjetas válidas.", "invalid": invalid}), 400
-
-    job_id = str(uuid.uuid4())
-    JOBS[job_id] = {
-        "id": job_id,
-        "created": datetime.utcnow().isoformat() + "Z",
-        "total": len(cards),
-        "done": 0,
-        "results": [],
-        "status": "running",
-        "cancelled": False,
-        "invalid": invalid,
-    }
-    t = threading.Thread(target=_worker, args=(job_id, cards), daemon=True)
-    t.start()
-
-    return jsonify({"job_id": job_id, "total": len(cards), "invalid": invalid})
-
-
-@app.route("/api/status/<job_id>")
-def api_status(job_id):
-    job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"error": "Job no encontrado"}), 404
-    with LOCK:
-        return jsonify({
-            "id": job["id"],
-            "total": job["total"],
-            "done": job["done"],
-            "status": job["status"],
-            "results": list(job["results"]),
-            "invalid": job["invalid"],
-        })
-
-
-@app.route("/api/cancel/<job_id>", methods=["POST"])
-def api_cancel(job_id):
-    job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"error": "Job no encontrado"}), 404
-    job["cancelled"] = True
-    return jsonify({"ok": True})
-
-
-@app.route("/api/export/<job_id>.csv")
-def api_export(job_id):
-    job = JOBS.get(job_id)
-    if not job:
-        return jsonify({"error": "Job no encontrado"}), 404
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["#", "Card", "Status", "Message", "Time (s)"])
-    for r in job["results"]:
-        writer.writerow([r["id"], r["card"], r["status"], r["message"], r["time"]])
-
-    buf.seek(0)
-    return Response(
-        buf.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=results_{job_id}.csv"},
-    )
-
-
-@app.route("/api/lives")
-def api_lives():
-    if not os.path.isfile(LIVES_FILE):
-        return Response("", mimetype="text/plain")
-    return send_file(LIVES_FILE, mimetype="text/plain")
-
-
-# --- Lógica de Proxies ---
-
-@app.route("/api/proxies", methods=["POST"])
-def api_set_proxies():
-    global USER_PROXIES
-    payload = request.get_json(silent=True) or {}
-    raw = payload.get("proxies", "")
-
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    valid = []
-    for ln in lines:
-        if not ln.startswith(("http://", "https://", "socks4://", "socks5://")):
-            ln = "http://" + ln
-        valid.append(ln)
-
-    USER_PROXIES = valid
-    set_proxies(valid)
-    return jsonify({"ok": True, "count": len(valid)})
-
-
-@app.route("/api/proxies/auto", methods=["POST"])
-def api_auto_proxies():
-    import requests as req
-    global USER_PROXIES
+# --- ENDPOINT PARA CHECKER STRIPE (MANTENIDO) ---
+@app.route('/process_stripe_payment', methods=['POST'])
+def process_stripe_payment():
+    data = request.json
     try:
-        # Fuente de proxies gratuitos (ProxyScrape)
-        r = req.get(
-            "https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/protocols/http/data.txt",
-            timeout=15
+        # Lógica original de creación de payment method
+        pm = stripe.PaymentMethod.create(
+            type="card",
+            card={
+                "number": data['card'],
+                "exp_month": int(data['mm']),
+                "exp_year": int(data['yyyy']),
+                "cvc": data['cvv'],
+            },
         )
-        if r.status_code == 200:
-            lines = [ln.strip() for ln in r.text.splitlines() if ln.strip() and not ln.startswith("#")]
-            proxies = []
-            for ln in lines:
-                if not ln.startswith("http"):
-                    ln = "http://" + ln
-                proxies.append(ln)
-            
-            USER_PROXIES = proxies
-            set_proxies(proxies)
-            return jsonify({"ok": True, "count": len(proxies), "source": "proxyscrape/http"})
+        return jsonify({"status": "success", "message": "Payment Method Creado", "id": pm.id})
+    except stripe.error.CardError as e:
+        return jsonify({"status": "error", "message": e.user_message})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    return jsonify({"error": "No se pudo obtener la lista de proxies"}), 500
+        return jsonify({"status": "error", "message": str(e)})
 
+# --- ENDPOINT PARA CHECKER PAYPAL ---
+@app.route('/api/paypal/create-order', methods=['POST'])
+def create_paypal_order():
+    data = request.json
+    amount = data.get('amount', '2.50')
+    token = get_paypal_access_token()
+    if not token:
+        return jsonify({'error': 'No se pudo autenticar con PayPal'}), 500
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {
+        "intent": "CAPTURE",
+        "purchase_units": [{"amount": {"currency_code": "USD", "value": amount}}]
+    }
+    response = requests.post(f"{PAYPAL_API_BASE}/v2/checkout/orders", headers=headers, json=payload)
+    if response.status_code == 201:
+        return jsonify(response.json())
+    return jsonify({'error': 'Error al crear la orden'}), response.status_code
+
+@app.route('/api/paypal/capture-order', methods=['POST'])
+def capture_paypal_order():
+    data = request.json
+    order_id = data.get('orderID')
+    token = get_paypal_access_token()
+    if not token:
+        return jsonify({'error': 'No se pudo autenticar'}), 500
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    response = requests.post(f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}/capture", headers=headers)
+    if response.status_code == 201:
+        return jsonify(response.json())
+    return jsonify({'error': 'Error al capturar el pago'}), response.status_code
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
