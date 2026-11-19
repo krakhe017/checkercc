@@ -14,14 +14,14 @@
             <p class="subtitle">Selecciona el método de pago</p>
         </header>
 
-        <!-- Selector de Pasarela -->
-        <div class="gateway-selector">
-            <button class="gateway-btn active" onclick="switchGateway('stripe', this)">Stripe</button>
-            <button class="gateway-btn" onclick="switchGateway('paypal', this)">PayPal</button>
+        <!-- Pestañas para cambiar de pasarela -->
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('stripe', this)">Stripe</button>
+            <button class="tab-btn" onclick="switchTab('paypal', this)">PayPal</button>
         </div>
 
         <!-- Formulario de Tarjeta (Común para ambos) -->
-        <div class="card-form">
+        <div id="card-form" class="card-form">
             <div class="input-group">
                 <label>Número de Tarjeta</label>
                 <input type="text" id="card-number" placeholder="4111 1111 1111 1111">
@@ -56,15 +56,15 @@
     </div>
 
     <script>
-        let currentGateway = 'stripe';
+        let currentTab = 'stripe';
         const PAYPAL_CLIENT_ID = "{{ PAYPAL_CLIENT_ID }}";
 
-        function switchGateway(gateway, element) {
-            currentGateway = gateway;
-            document.querySelectorAll('.gateway-btn').forEach(btn => btn.classList.remove('active'));
+        function switchTab(tab, element) {
+            currentTab = tab;
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
             element.classList.add('active');
 
-            if (gateway === 'paypal') {
+            if (tab === 'paypal') {
                 document.getElementById('paypal-container').classList.remove('hidden');
                 document.querySelector('.card-form').classList.add('hidden');
                 renderPayPalButtons();
@@ -76,7 +76,7 @@
 
         // --- LÓGICA STRIPE ---
         async function startCheck() {
-            if (currentGateway !== 'stripe') return;
+            if (currentTab !== 'stripe') return;
 
             const card = document.getElementById('card-number').value.replace(/\s/g, '');
             const mm = document.getElementById('card-mm').value;
