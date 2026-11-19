@@ -2,9 +2,9 @@ body { background: #0a0a0a; color: #fff; font-family: 'Consolas', monospace; dis
 .container { background: #121212; border: 1px solid #00ff88; border-radius: 10px; padding: 30px; width: 100%; max-width: 500px; }
 header h1 { color: #00ff88; text-align: center; }
 .subtitle { text-align: center; color: #888; margin-bottom: 20px; }
-.gateway-selector { display: flex; gap: 10px; margin-bottom: 20px; }
-.gateway-btn { flex: 1; padding: 10px; background: #1a1a1a; border: 1px solid #333; color: #fff; cursor: pointer; border-radius: 5px; }
-.gateway-btn.active { background: #00ff88; color: #000; border-color: #00ff88; }
+.tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+.tab-btn { flex: 1; padding: 10px; background: #1a1a1a; border: 1px solid #333; color: #fff; cursor: pointer; border-radius: 5px; }
+.tab-btn.active { background: #00ff88; color: #000; border-color: #00ff88; }
 .input-group { margin-bottom: 15px; }
 .input-group label { display: block; margin-bottom: 5px; color: #00ff88; font-size: 12px; }
 .input-group input { width: 100%; padding: 10px; background: #0a0a0a; border: 1px solid #333; color: #fff; border-radius: 5px; }
